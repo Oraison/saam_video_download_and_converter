@@ -11,7 +11,7 @@ import json
 import urllib.request
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
-APP_VERSION = "v1.0.1"
+APP_VERSION = "v1.0.2"
 GITHUB_REPO = "Oraison/saam_video_download_and_converter" # GitHub '사용자명/저장소명' 형식
 
 def resource_path(relative_path):
@@ -459,19 +459,23 @@ class VideoConverterApp:
                 return
 
             new_exe = current_exe + ".new"
-            urllib.request.urlretrieve(download_url, new_exe)
+            
+            req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(new_exe, 'wb') as out_file:
+                out_file.write(response.read())
 
-            bat_path = os.path.join(os.path.dirname(current_exe), "update.bat")
+            exe_dir = os.path.dirname(current_exe)
+            bat_path = os.path.join(exe_dir, "update.bat")
             current_exe_name = os.path.basename(current_exe)
             new_exe_name = os.path.basename(new_exe)
 
             # 현재 프로세스가 완전히 종료될 때까지 반복 시도 후 덮어쓰고 재실행하는 배치 파일 작성
-            bat_content = f'@echo off\n:loop\ntimeout /t 1 /nobreak > NUL\ndel "{current_exe_name}"\nif exist "{current_exe_name}" goto loop\nren "{new_exe_name}" "{current_exe_name}"\nstart "" "{current_exe_name}"\ndel "%~f0"\n'
+            bat_content = f'@echo off\nchcp 65001 > NUL\ncd /d "{exe_dir}"\n:loop\ntimeout /t 1 /nobreak > NUL\ndel "{current_exe_name}"\nif exist "{current_exe_name}" goto loop\nren "{new_exe_name}" "{current_exe_name}"\nstart "" "{current_exe}"\ndel "%~f0"\n'
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(bat_content)
 
             creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
-            subprocess.Popen([bat_path], shell=True, creationflags=creationflags)
+            subprocess.Popen(f'"{bat_path}"', shell=True, creationflags=creationflags)
             self.root.after(0, self.root.quit)
 
         except Exception as e:
