@@ -8,7 +8,11 @@ import re
 import tempfile
 import glob
 import json
+import urllib.request
 from tkinterdnd2 import TkinterDnD, DND_FILES
+
+APP_VERSION = "v1.0.1"
+GITHUB_REPO = "Oraison/saam_video_download_and_converter" # GitHub '사용자명/저장소명' 형식
 
 def resource_path(relative_path):
     try:
@@ -88,6 +92,12 @@ class VideoConverterApp:
         tk.Frame(self.root, height=1, bg="#e0e0e0").pack(fill="x", padx=20, pady=(15, 5))
         update_frame = tk.Frame(self.root)
         update_frame.pack(fill="x", padx=25, side="bottom", pady=(0, 15))
+        
+        self.btn_app_update = tk.Button(update_frame, text="프로그램 업데이트", command=self.check_app_update, relief="groove")
+        self.btn_app_update.pack(side="left")
+        self.app_version_label = tk.Label(update_frame, text=f"앱: {APP_VERSION}", font=("Arial", 9, "italic"), fg="gray")
+        self.app_version_label.pack(side="left", padx=5)
+
         self.btn_update = tk.Button(update_frame, text="엔진 업데이트", command=self.start_yt_dlp_update, relief="groove")
         self.btn_update.pack(side="right")
         self.version_label = tk.Label(update_frame, text="", font=("Arial", 9, "italic"), fg="gray")
@@ -234,7 +244,8 @@ class VideoConverterApp:
                     self.root.after(0, self.update_ui_after_task, "❌ 변환 과정에서 오류 발생", "red")
 
             except Exception as e:
-                self.root.after(0, self.update_ui_after_task, f"❌ 오류 발생: {e}", "red")
+                self.root.after(0, self.update_ui_after_task, "❌ 다운로드 실패 (엔진 업데이트 권장)", "red")
+                self.root.after(0, lambda err=e: messagebox.showwarning("다운로드 오류", f"유튜브 영상 다운로드에 실패했습니다.\n우측 하단의 [엔진 업데이트] 버튼을 눌러 최신 버전으로 업데이트한 후 다시 시도해 주세요.\n\n상세 오류:\n{str(err)[:300]}"))
                 print("YouTube Error:", e)
 
     # ==========================================
@@ -341,7 +352,7 @@ class VideoConverterApp:
             messagebox.showerror("오류", "파일을 찾을 수 없습니다.")
 
     def start_yt_dlp_update(self):
-        if messagebox.askyesno("업데이트 확인", "최신 버전의 유튜브 다운로드 엔진(yt-dlp.exe)을 다운로드합니다.\n계속하시겠습니까?"):
+        if messagebox.askyesno("업데이트 확인", "최신 버전의 유튜브 다운로드 엔진을 다운로드합니다.\n계속하시겠습니까?"):
             self.lbl_status.config(text="엔진 업데이트 확인 중...", fg="blue")
             self.btn_update.config(state=tk.DISABLED)
             threading.Thread(target=self.run_yt_dlp_update, daemon=True).start()
@@ -395,6 +406,81 @@ class VideoConverterApp:
             self.version_label.config(text=f"현재 v.{version_output}")
         except Exception:
             self.version_label.config(text="버전 확인 불가")
+
+    # ==========================================
+    # 프로그램 자체 업데이트 (GitHub Releases)
+    # ==========================================
+    def check_app_update(self):
+        self.btn_app_update.config(state=tk.DISABLED)
+        self.lbl_status.config(text="업데이트 확인 중...", fg="blue")
+        threading.Thread(target=self._run_app_update_check, daemon=True).start()
+
+    def _run_app_update_check(self):
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+
+            latest_version = data.get("tag_name")
+            if latest_version and latest_version != APP_VERSION:
+                assets = data.get("assets", [])
+                download_url = None
+                for asset in assets:
+                    if asset["name"].endswith(".exe"):
+                        download_url = asset["browser_download_url"]
+                        break
+
+                if download_url:
+                    self.root.after(0, self._prompt_app_update, latest_version, download_url)
+                else:
+                    self.root.after(0, lambda: messagebox.showinfo("업데이트", "최신 버전이 릴리즈되었으나 .exe 파일이 없습니다."))
+                    self.root.after(0, self._reset_app_update_ui)
+            else:
+                self.root.after(0, lambda: messagebox.showinfo("업데이트", "이미 최신 버전입니다."))
+                self.root.after(0, self._reset_app_update_ui)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("오류", f"버전 확인 실패:\n{e}"))
+            self.root.after(0, self._reset_app_update_ui)
+
+    def _prompt_app_update(self, latest_version, download_url):
+        if messagebox.askyesno("업데이트 발견", f"새로운 버전({latest_version})이 있습니다.\n업데이트하시겠습니까?"):
+            self.lbl_status.config(text="프로그램 다운로드 중...", fg="blue")
+            threading.Thread(target=self._download_and_apply_update, args=(download_url,), daemon=True).start()
+        else:
+            self._reset_app_update_ui()
+
+    def _download_and_apply_update(self, download_url):
+        try:
+            current_exe = sys.executable if getattr(sys, 'frozen', False) else sys.argv[0]
+            if not current_exe.endswith('.exe'):
+                self.root.after(0, lambda: messagebox.showerror("알림", "파이썬 스크립트(.py) 상태에서는 업데이트가 불가능합니다.\n빌드된 .exe 환경에서 테스트해주세요."))
+                self.root.after(0, self._reset_app_update_ui)
+                return
+
+            new_exe = current_exe + ".new"
+            urllib.request.urlretrieve(download_url, new_exe)
+
+            bat_path = os.path.join(os.path.dirname(current_exe), "update.bat")
+            current_exe_name = os.path.basename(current_exe)
+            new_exe_name = os.path.basename(new_exe)
+
+            # 현재 프로세스가 완전히 종료될 때까지 반복 시도 후 덮어쓰고 재실행하는 배치 파일 작성
+            bat_content = f'@echo off\n:loop\ntimeout /t 1 /nobreak > NUL\ndel "{current_exe_name}"\nif exist "{current_exe_name}" goto loop\nren "{new_exe_name}" "{current_exe_name}"\nstart "" "{current_exe_name}"\ndel "%~f0"\n'
+            with open(bat_path, "w", encoding="utf-8") as f:
+                f.write(bat_content)
+
+            creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+            subprocess.Popen([bat_path], shell=True, creationflags=creationflags)
+            self.root.after(0, self.root.quit)
+
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("오류", f"적용 중 문제 발생:\n{e}"))
+            self.root.after(0, self._reset_app_update_ui)
+
+    def _reset_app_update_ui(self):
+        self.lbl_status.config(text="대기 중", fg="black")
+        self.btn_app_update.config(state=tk.NORMAL)
 
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
