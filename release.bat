@@ -1,1 +1,0 @@
-pyinstaller --noconsole --onefile --icon=app_icon.ico --add-binary "ffmpeg.exe;." --add-binary "yt-dlp.exe;." converter.py
