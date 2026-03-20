@@ -11,7 +11,7 @@ import json
 import urllib.request
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
-APP_VERSION = "v1.0.2"
+APP_VERSION = "v1.0.0"
 GITHUB_REPO = "Oraison/saam_video_download_and_converter" # GitHub '사용자명/저장소명' 형식
 
 def resource_path(relative_path):
@@ -37,11 +37,32 @@ class VideoConverterApp:
         self.output_filepath = ""
         self.total_duration = 0
 
+        self._cleanup_old_update()
+
         self._setup_ui()
         self.update_version_label()
         
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind('<<Drop>>', self.handle_drop)
+
+    def _cleanup_old_update(self):
+        def cleanup():
+            current_exe = sys.executable if getattr(sys, 'frozen', False) else sys.argv[0]
+            old_exe = current_exe + ".old"
+            
+            if not os.path.exists(old_exe):
+                return
+                
+            import time
+            # 이전 프로세스가 완전히 종료될 때까지 최대 5번(2.5초) 재시도하며 삭제
+            for _ in range(5):
+                try:
+                    os.remove(old_exe)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+                    
+        threading.Thread(target=cleanup, daemon=True).start()
 
     def _setup_ui(self):
         # --- 1. 유튜브 다운로드 섹션 ---
@@ -461,22 +482,50 @@ class VideoConverterApp:
             new_exe = current_exe + ".new"
             
             req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response, open(new_exe, 'wb') as out_file:
-                out_file.write(response.read())
+            with urllib.request.urlopen(req) as response:
+                total_size = int(response.info().get('Content-Length', -1))
+                downloaded = 0
+                with open(new_exe, 'wb') as out_file:
+                    while True:
+                        chunk = response.read(8192) # 8KB씩 안전하게 분할 다운로드
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            self.root.after(0, self.lbl_status.config, {"text": f"프로그램 업데이트 중... {percent:.1f}%", "fg": "blue"})
+                        else:
+                            self.root.after(0, self.lbl_status.config, {"text": f"프로그램 업데이트 중... ({downloaded // 1024} KB)", "fg": "blue"})
 
-            exe_dir = os.path.dirname(current_exe)
-            bat_path = os.path.join(exe_dir, "update.bat")
-            current_exe_name = os.path.basename(current_exe)
-            new_exe_name = os.path.basename(new_exe)
-
-            # 현재 프로세스가 완전히 종료될 때까지 반복 시도 후 덮어쓰고 재실행하는 배치 파일 작성
-            bat_content = f'@echo off\nchcp 65001 > NUL\ncd /d "{exe_dir}"\n:loop\ntimeout /t 1 /nobreak > NUL\ndel "{current_exe_name}"\nif exist "{current_exe_name}" goto loop\nren "{new_exe_name}" "{current_exe_name}"\nstart "" "{current_exe}"\ndel "%~f0"\n'
-            with open(bat_path, "w", encoding="utf-8") as f:
-                f.write(bat_content)
-
-            creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
-            subprocess.Popen(f'"{bat_path}"', shell=True, creationflags=creationflags)
-            self.root.after(0, self.root.quit)
+            # --- 배치 파일 방식 대신 안전한 파일명 변경(Rename) 트릭 사용 ---
+            old_exe = current_exe + ".old"
+            
+            if os.path.exists(old_exe):
+                try:
+                    os.remove(old_exe)
+                except Exception:
+                    pass
+                    
+            # 1. 윈도우는 실행 중인 파일의 이름 변경을 허용함
+            os.rename(current_exe, old_exe)
+            
+            # 2. 새 파일을 원래 이름으로 변경
+            os.rename(new_exe, current_exe)
+            
+            # PyInstaller 환경 변수 상속 완벽 차단 (대소문자 무시 및 PATH 내부 찌꺼기까지 완벽 제거)
+            clean_env = os.environ.copy()
+            for k in list(clean_env.keys()):
+                if '_MEI' in k.upper() or 'PYINSTALLER' in k.upper():
+                    clean_env.pop(k, None)
+                    
+            if 'PATH' in clean_env:
+                paths = clean_env['PATH'].split(os.pathsep)
+                clean_env['PATH'] = os.pathsep.join([p for p in paths if '_MEI' not in p.upper()])
+            
+            # 3. 파이썬에서 새 버전을 직접 실행하고 종료 (배치파일을 거치지 않으므로 환경변수가 절대 오염되지 않음)
+            subprocess.Popen([current_exe], env=clean_env)
+            os._exit(0)
 
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror("오류", f"적용 중 문제 발생:\n{e}"))
